@@ -2,7 +2,7 @@
 
 {
   Inno Setup
-  Copyright (C) 1997-2024 Jordan Russell
+  Copyright (C) 1997-2025 Jordan Russell
   Portions by Martijn Laan
   For conditions of distribution and use, see LICENSE.TXT.
 
@@ -522,9 +522,9 @@ type
     function DestroyLineState(const AMemo: TIDEScintFileEdit): Boolean;
     procedure DestroyDebugInfo;
     procedure DetachDebugger;
-    function EvaluateConstant(const S: String; var Output: String): Integer;
+    function EvaluateConstant(const S: String; out Output: String): Integer;
     function EvaluateVariableEntry(const DebugEntry: PVariableDebugEntry;
-      var Output: String): Integer;
+      out Output: String): Integer;
     procedure FindNext(const ReverseDirection: Boolean);
     function FindSetupDirectiveValue(const DirectiveName,
       DefaultValue: String): String; overload;
@@ -756,8 +756,6 @@ end;
 function TMainForm.InitializeMemoBase(const Memo: TIDEScintEdit; const PopupMenu: TPopupMenu): TIDEScintEdit;
 begin
   Memo.Align := alClient;
-  Memo.AutoCompleteFontName := Font.Name;
-  Memo.AutoCompleteFontSize := Font.Size;
   Memo.Font.Name := GetPreferredMemoFont; { Default font only, see ReadConfig }
   Memo.Font.Size := 10;
   Memo.ShowHint := True;
@@ -871,7 +869,7 @@ constructor TMainForm.Create(AOwner: TComponent);
       if (I >= 0) and (I <= Ord(High(TThemeType))) then
         FOptions.ThemeType := TThemeType(I);
       FMainMemo.Font.Name := Ini.ReadString('Options', 'EditorFontName', FMainMemo.Font.Name);
-      FMainMemo.Font.Size := Ini.ReadInteger('Options', 'EditorFontSize', FMainMemo.Font.Size);
+      FMainMemo.Font.Size := Ini.ReadInteger('Options', 'EditorFontSize', 10);
       FMainMemo.Font.Charset := Ini.ReadInteger('Options', 'EditorFontCharset', FMainMemo.Font.Charset);
       FMainMemo.Zoom := Ini.ReadInteger('Options', 'Zoom', 0); { MemoZoom will zoom the other memos }
       for Memo in FMemos do
@@ -883,7 +881,7 @@ constructor TMainForm.Create(AOwner: TComponent);
         'Your version of Inno Setup has been updated! <a id="hwhatsnew">See what''s new</a>.',
         $ABE3AB); //MGreen with HSL lightness changed from 40% to 78%
       CheckUpdatePanelMessage(Ini, 'VSCodeMemoKeyMap', 0, 1,
-        'Support for Visual Studio Code-style editor shortcuts has been added! Use the Options dialog and <a id="toptions-vscode">change the Editor Keys option</a>.',
+        'VS Code-style editor shortcuts added! Use the <a id="toptions-vscode">Editor Keys option</a> in Options dialog.',
         $FFD399); //MBlue with HSL lightness changed from 42% to 80%
       UpdateUpdatePanel;
 
@@ -1196,16 +1194,24 @@ begin
     there are no popups owned by the application window).
     So if the application calls Application.MessageBox while it isn't in the
     foreground, that message box will be owned by Application.Handle, not by
-    the last-active form as it should be. That can lead to the message box
-    falling behind the form in z-order.
-    To rectify that, we return Screen.ActiveForm.Handle if possible, which is
-    valid whether or not the application is in the foreground. This code is
-    from TCustomTaskDialog.Execute. (HandleAllocated call added to be safe) }
+    the last-active window as it should be. That can lead to the message box
+    falling behind the main form in z-order.
+    To rectify that, when no window is active and MainFormOnTaskBar=True, we
+    fall back to returning the handle of the main form's last active popup,
+    which is the window that would be activated if the main form's taskbar
+    button were clicked. (If Application.Handle is active, we treat that the
+    same as no active window because Application.Handle shouldn't be the owner
+    of any windows when MainFormOnTaskBar=True.)
+    If there is no assigned main form or if MainFormOnTaskBar=False, then we
+    fall back to the default handling. }
 
-  if Assigned(Screen.ActiveForm) and
-     (Screen.ActiveForm.FormStyle <> fsMDIChild) and
-     Screen.ActiveForm.HandleAllocated then
-    AHandle := Screen.ActiveForm.Handle;
+  if Application.MainFormOnTaskBar then begin
+    AHandle := GetActiveWindow;
+    if ((AHandle = 0) or (AHandle = Application.Handle)) and
+       Assigned(Application.MainForm) and
+       Application.MainForm.HandleAllocated then
+      AHandle := GetLastActivePopup(Application.MainFormHandle);
+  end;
 end;
 
 procedure TMainForm.FormAfterMonitorDpiChanged(Sender: TObject; OldDPI,
@@ -1221,7 +1227,7 @@ end;
 procedure TMainForm.FormCloseQuery(Sender: TObject;
   var CanClose: Boolean);
 begin
-  if IsWindowEnabled(Application.Handle) then
+  if IsWindowEnabled(Handle) then
     CanClose := ConfirmCloseFile(True)
   else
     { CloseQuery is also called by the VCL when a WM_QUERYENDSESSION message
@@ -3460,12 +3466,9 @@ begin
 end;
 
 procedure TMainForm.BOpenOutputFolderClick(Sender: TObject);
-var
-  Dir: String;
 begin
-  Dir := GetWinDir;
-  ShellExecute(Application.Handle, 'open', PChar(AddBackslash(Dir) + 'explorer.exe'),
-    PChar(Format('/select,"%s"', [FCompiledExe])), PChar(Dir), SW_SHOWNORMAL);
+  LaunchFileOrURL(AddBackslash(GetSystemWinDir) + 'explorer.exe',
+    Format('/select,"%s"', [FCompiledExe]));
 end;
 
 procedure TMainForm.HShortcutsDocClick(Sender: TObject);
@@ -3488,26 +3491,22 @@ end;
 
 procedure TMainForm.HExamplesClick(Sender: TObject);
 begin
-  ShellExecute(Application.Handle, 'open',
-    PChar(PathExtractPath(NewParamStr(0)) + 'Examples'), nil, nil, SW_SHOWNORMAL);
+  LaunchFileOrURL(PathExtractPath(NewParamStr(0)) + 'Examples');
 end;
 
 procedure TMainForm.HFaqClick(Sender: TObject);
 begin
-  ShellExecute(Application.Handle, 'open',
-    PChar(PathExtractPath(NewParamStr(0)) + 'isfaq.url'), nil, nil, SW_SHOWNORMAL);
+  LaunchFileOrURL(PathExtractPath(NewParamStr(0)) + 'isfaq.url');
 end;
 
 procedure TMainForm.HWhatsNewClick(Sender: TObject);
 begin
-  ShellExecute(Application.Handle, 'open',
-    PChar(PathExtractPath(NewParamStr(0)) + 'whatsnew.htm'), nil, nil, SW_SHOWNORMAL);
+  LaunchFileOrURL(PathExtractPath(NewParamStr(0)) + 'whatsnew.htm');
 end;
 
 procedure TMainForm.HWebsiteClick(Sender: TObject);
 begin
-  ShellExecute(Application.Handle, 'open', 'https://jrsoftware.org/isinfo.php', nil,
-    nil, SW_SHOWNORMAL);
+  LaunchFileOrURL('https://jrsoftware.org/isinfo.php');
 end;
 
 procedure TMainForm.HMailingListClick(Sender: TObject);
@@ -3538,8 +3537,8 @@ begin
     String(FCompilerVersion.Version) + SNewLine;
   if FCompilerVersion.Title <> 'Inno Setup' then
     S := S + (SNewLine + 'Based on Inno Setup' + SNewLine);
-  S := S + ('Copyright (C) 1997-2024 Jordan Russell' + SNewLine +
-    'Portions Copyright (C) 2000-2024 Martijn Laan' + SNewLine +
+  S := S + ('Copyright (C) 1997-2025 Jordan Russell' + SNewLine +
+    'Portions Copyright (C) 2000-2025 Martijn Laan' + SNewLine +
     'All rights reserved.' + SNewLine2 +
     'Inno Setup home page:' + SNewLine +
     'https://www.innosetup.com/' + SNewLine2 +
@@ -5393,9 +5392,10 @@ begin
     FCallTipState.LastPosCallTip := Pos;
 
   // Should get current api definition
-  var Word := FMemosStyler.GetScriptFunctionDefinition(FCallTipState.ClassOrRecordMember, FCallTipState.CurrentCallTipWord, FCallTipState.CurrentCallTip, FCallTipState.MaxCallTips);
-  if Word <> '' then begin
-    FCallTipState.FunctionDefinition := Word;
+  var FunctionDefinition := FMemosStyler.GetScriptFunctionDefinition(FCallTipState.ClassOrRecordMember, FCallTipState.CurrentCallTipWord, FCallTipState.CurrentCallTip, FCallTipState.MaxCallTips);
+  if ((FCallTipState.MaxCallTips = 1) and FunctionDefinition.HasParams) or //if there's a single definition then only show if it has a parameter
+     (FCallTipState.MaxCallTips > 1) then begin                            //if there's multiple then show always just like MemoHintShow, so even the one without parameters if it exists
+    FCallTipState.FunctionDefinition := FunctionDefinition.ScriptFuncWithoutHeader;
     if FCallTipState.MaxCallTips > 1 then
       FCallTipState.FunctionDefinition := AnsiString(Format(#1'%d of %d'#2'%s', [FCallTipState.CurrentCallTip+1, FCallTipState.MaxCallTips, FCallTipState.FunctionDefinition]));
 
@@ -5566,8 +5566,16 @@ begin
   end else if FActiveMemo.AutoCompleteActive then begin
     if Ch = '(' then begin
       Inc(FCallTipState.BraceCount);
-      if FOptions.AutoCallTips then
+      if FOptions.AutoCallTips then begin
         InitiateCallTip(Ch);
+        if not FActiveMemo.CallTipActive then begin
+          { Normally the calltip activation means any active autocompletion gets
+            cancelled by Scintilla but if the current word has no call tip then
+            we should make sure ourselves that the added brace still cancels
+            the currently active autocompletion }
+          DoAutoComplete := True;
+        end;
+      end;
     end else if Ch = ')' then
       Dec(FCallTipState.BraceCount)
     else
@@ -5581,8 +5589,8 @@ begin
 
   if DoAutoComplete then begin
     case Ch of
-      'A'..'Z', 'a'..'z', '_', '#', '{', '[', '<':
-        if not FActiveMemo.AutoCompleteActive and FOptions.AutoAutoComplete then
+      'A'..'Z', 'a'..'z', '_', '#', '{', '[', '<', '0'..'9':
+        if not FActiveMemo.AutoCompleteActive and FOptions.AutoAutoComplete and not (Ch in ['0'..'9']) then
           InitiateAutoComplete(Ch);
     else
       var RestartAutoComplete := (Ch in [' ', '.']) and
@@ -5596,19 +5604,20 @@ end;
 
 procedure TMainForm.MemoHintShow(Sender: TObject; var Info: TScintHintInfo);
 
-  function GetCodeVariableDebugEntryFromFileLineCol(FileIndex, Line, Col: Integer): PVariableDebugEntry;
+  function GetCodeVariableDebugEntryFromFileLineCol(FileIndex, Line, Col: Integer; out DebugEntry: PVariableDebugEntry): Boolean;
   var
     I: Integer;
   begin
     { FVariableDebugEntries uses 1-based line and column numbers }
     Inc(Line);
     Inc(Col);
-    Result := nil;
+    Result := False;
     for I := 0 to FVariableDebugEntriesCount-1 do begin
       if (FVariableDebugEntries[I].FileIndex = FileIndex) and
          (FVariableDebugEntries[I].LineNumber = Line) and
          (FVariableDebugEntries[I].Col = Col) then begin
-        Result := @FVariableDebugEntries[I];
+        DebugEntry := @FVariableDebugEntries[I];
+        Result := True;
         Break;
       end;
     end;
@@ -5628,6 +5637,15 @@ procedure TMainForm.MemoHintShow(Sender: TObject; var Info: TScintHintInfo);
     S := FActiveMemo.GetRawTextRange(LinePos, Pos);
     U := FActiveMemo.ConvertRawStringToString(S);
     Result := Length(U);
+  end;
+
+  function FindVarOrFuncRange(const Pos: Integer): TScintRange;
+  begin
+    { Note: The GetPositionAfter is needed so that when the mouse is over a '.'
+      between two words, it won't match the word to the left of the '.' }
+    FActiveMemo.SetDefaultWordChars;
+    Result.StartPos := FActiveMemo.GetWordStartPosition(FActiveMemo.GetPositionAfter(Pos), True);
+    Result.EndPos := FActiveMemo.GetWordEndPosition(Pos, True);
   end;
 
   function FindConstRange(const Pos: Integer): TScintRange;
@@ -5670,60 +5688,82 @@ procedure TMainForm.MemoHintShow(Sender: TObject; var Info: TScintHintInfo);
     end;
   end;
 
-var
-  Pos, Line, I, J: Integer;
-  Output: String;
-  DebugEntry: PVariableDebugEntry;
-  ConstRange: TScintRange;
+  procedure UpdateInfo(var Info: TScintHintInfo; const HintStr: String; const Range: TScintRange; const Memo: TIDEScintEdit);
+  begin
+    Info.HintStr := HintStr;
+    Info.CursorRect.TopLeft := Memo.GetPointFromPosition(Range.StartPos);
+    Info.CursorRect.BottomRight := Memo.GetPointFromPosition(Range.EndPos);
+    Info.CursorRect.Bottom := Info.CursorRect.Top + Memo.LineHeight;
+    Info.HideTimeout := High(Integer); { infinite }
+  end;
+
 begin
-  if FDebugClientWnd = 0 then
-    Exit;
-  Pos := FActiveMemo.GetPositionFromPoint(Info.CursorPos, True, True);
+  var Pos := FActiveMemo.GetPositionFromPoint(Info.CursorPos, True, True);
   if Pos < 0 then
     Exit;
-  Line := FActiveMemo.GetLineFromPosition(Pos);
+  var Line := FActiveMemo.GetLineFromPosition(Pos);
 
-  { Check if cursor is over a [Code] variable }
-  if (FActiveMemo is TIDEScintFileEdit) and
-     (FMemosStyler.GetSectionFromLineState(FActiveMemo.Lines.State[Line]) = scCode) then begin
-    { Note: The '+ 1' is needed so that when the mouse is over a '.'
-      between two words, it won't match the word to the left of the '.' }
-    FActiveMemo.SetDefaultWordChars;
-    I := FActiveMemo.GetWordStartPosition(Pos + 1, True);
-    J := FActiveMemo.GetWordEndPosition(Pos, True);
-    if J > I then begin
-      DebugEntry := GetCodeVariableDebugEntryFromFileLineCol((FActiveMemo as TIDEScintFileEdit).CompilerFileIndex,
-        Line, GetCodeColumnFromPosition(I));
-      if DebugEntry <> nil then begin
+  { Check if cursor is over a [Code] variable or function }
+  if FMemosStyler.GetSectionFromLineState(FActiveMemo.Lines.State[Line]) = scCode then begin
+    var VarOrFuncRange := FindVarOrFuncRange(Pos);
+    if VarOrFuncRange.EndPos > VarOrFuncRange.StartPos then begin
+      var HintStr := '';
+      var DebugEntry: PVariableDebugEntry;
+      if (FActiveMemo is TIDEScintFileEdit) and (FDebugClientWnd <> 0) and
+         GetCodeVariableDebugEntryFromFileLineCol((FActiveMemo as TIDEScintFileEdit).CompilerFileIndex,
+           Line, GetCodeColumnFromPosition(VarOrFuncRange.StartPos), DebugEntry) then begin
+        var Output: String;
         case EvaluateVariableEntry(DebugEntry, Output) of
-          1: Info.HintStr := Output;
-          2: Info.HintStr := Output;
+          1: HintStr := Output;
+          2: HintStr := Output;
         else
-          Info.HintStr := 'Unknown error';
+          HintStr := 'Unknown error';
         end;
-        Info.CursorRect.TopLeft := FActiveMemo.GetPointFromPosition(I);
-        Info.CursorRect.BottomRight := FActiveMemo.GetPointFromPosition(J);
-        Info.CursorRect.Bottom := Info.CursorRect.Top + FActiveMemo.LineHeight;
-        Info.HideTimeout := High(Integer);  { infinite }
+      end else begin
+        var ClassMember := False;
+        var Name := FActiveMemo.GetTextRange(VarOrFuncRange.StartPos, VarOrFuncRange.EndPos);
+        var Index := 0;
+        var Count: Integer;
+        var FunctionDefinition := FMemosStyler.GetScriptFunctionDefinition(ClassMember, Name, Index, Count);
+        if Count = 0 then begin
+          ClassMember := not ClassMember;
+          FunctionDefinition := FMemosStyler.GetScriptFunctionDefinition(ClassMember, Name, Index, Count);
+        end;
+        while Index < Count do begin
+          if Index <> 0 then
+            FunctionDefinition := FMemosStyler.GetScriptFunctionDefinition(ClassMember, Name, Index);
+          if HintStr <> '' then
+            HintStr := HintStr + #13;
+          if FunctionDefinition.WasFunction then
+            HintStr := HintStr + 'function '
+          else
+            HintStr := HintStr + 'procedure ';
+          HintStr := HintStr + String(FunctionDefinition.ScriptFuncWithoutHeader);
+          Inc(Index);
+        end;
+      end;
+
+      if HintStr <> '' then begin
+        UpdateInfo(Info, HintStr, VarOrFuncRange, FActiveMemo);
         Exit;
       end;
     end;
   end;
 
-  { Check if cursor is over a constant }
-  ConstRange := FindConstRange(Pos);
-  if ConstRange.EndPos > ConstRange.StartPos then begin
-    Info.HintStr := FActiveMemo.GetTextRange(ConstRange.StartPos, ConstRange.EndPos);
-    case EvaluateConstant(Info.HintStr, Output) of
-      1: Info.HintStr := Info.HintStr + ' = "' + Output + '"';
-      2: Info.HintStr := Info.HintStr + ' = Exception: ' + Output;
-    else
-      Info.HintStr := Info.HintStr + ' = Unknown error';
+  if FDebugClientWnd <> 0 then begin
+    { Check if cursor is over a constant }
+    var ConstRange := FindConstRange(Pos);
+    if ConstRange.EndPos > ConstRange.StartPos then begin
+      var HintStr := FActiveMemo.GetTextRange(ConstRange.StartPos, ConstRange.EndPos);
+      var Output: String;
+      case EvaluateConstant(Info.HintStr, Output) of
+        1: HintStr := HintStr + ' = "' + Output + '"';
+        2: HintStr := HintStr + ' = Exception: ' + Output;
+      else
+        HintStr := HintStr + ' = Unknown error';
+      end;
+      UpdateInfo(Info, HintStr, ConstRange, FActiveMemo);
     end;
-    Info.CursorRect.TopLeft := FActiveMemo.GetPointFromPosition(ConstRange.StartPos);
-    Info.CursorRect.BottomRight := FActiveMemo.GetPointFromPosition(ConstRange.EndPos);
-    Info.CursorRect.Bottom := Info.CursorRect.Top + FActiveMemo.LineHeight;
-    Info.HideTimeout := High(Integer);  { infinite }
   end;
 end;
 
@@ -6734,7 +6774,7 @@ begin
   Info.cbSize := SizeOf(Info);
   Info.fMask := SEE_MASK_FLAG_NO_UI or SEE_MASK_FLAG_DDEWAIT or
     SEE_MASK_NOCLOSEPROCESS or SEE_MASK_NOZONECHECKS;
-  Info.Wnd := Application.Handle;
+  Info.Wnd := Handle;
   if FOptions.RunAsDifferentUser then
     Info.lpVerb := 'runas'
   else
@@ -6744,19 +6784,21 @@ begin
   WorkingDir := PathExtractDir(RunFilename);
   Info.lpDirectory := PChar(WorkingDir);
   Info.nShow := SW_SHOWNORMAL;
-  { Disable windows so that the user can't click other things while a "Run as"
-    dialog is up but is not system modal (which it is currently) }
+  { When the RunAsDifferentUser option is enabled, it's this process that
+    waits on the UAC dialog, not Setup(Ldr), so we need to disable windows to
+    prevent the user from clicking other things before the UAC dialog is
+    dismissed (which is definitely a possibility if the "Switch to the secure
+    desktop when prompting for elevation" setting is disabled in Group
+    Policy). }
   SaveFocusWindow := GetFocus;
-  WindowList := DisableTaskWindows(0);
+  WindowList := DisableTaskWindows(Handle);
   try
     { Also temporarily remove the focus since a disabled window's children can
-      still receive keystrokes. This is needed if the UAC dialog doesn't come to
-      the foreground for some reason (e.g. if the following SetActiveWindow call
-      is removed). }
+      still receive keystrokes. This is needed if Windows doesn't switch to
+      the secure desktop immediately and instead shows a flashing taskbar
+      button that the user must click (which happened on Windows Vista; I'm
+      unable to reproduce it on Windows 11). }
     Windows.SetFocus(0);
-    { We have to make the application window the active window, otherwise the
-      UAC dialog doesn't come to the foreground automatically. }
-    SetActiveWindow(Application.Handle);
     ShellExecuteResult := ShellExecuteEx(@Info);
     ErrorCode := GetLastError;
   finally
@@ -6842,7 +6884,7 @@ begin
 end;
 
 function TMainForm.EvaluateConstant(const S: String;
-  var Output: String): Integer;
+  out Output: String): Integer;
 begin
   { This is about evaluating constants like 'app' and not [Code] variables }
   FReplyString := '';
@@ -6853,7 +6895,7 @@ begin
 end;
 
 function TMainForm.EvaluateVariableEntry(const DebugEntry: PVariableDebugEntry;
-  var Output: String): Integer;
+  out Output: String): Integer;
 begin
   FReplyString := '';
   Result := SendCopyDataMessage(FDebugClientWnd, Handle, CD_DebugClient_EvaluateVariableEntry,
@@ -7386,7 +7428,7 @@ begin
 
     { If it has been, offer to reload it }
     if Changed then begin
-      if IsWindowEnabled(Application.Handle) then begin
+      if IsWindowEnabled(Handle) then begin
         if MsgBox(Format(ReloadMessages[Memo.Modified], [Memo.Filename]),
            SCompilerFormCaption, mbConfirmation, MB_YESNO) = IDYES then
           if ConfirmCloseFile(False) then begin

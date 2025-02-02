@@ -2,7 +2,7 @@ unit Setup.ScriptFunc;
 
 {
   Inno Setup
-  Copyright (C) 1997-2024 Jordan Russell
+  Copyright (C) 1997-2025 Jordan Russell
   Portions by Martijn Laan
   For conditions of distribution and use, see LICENSE.TXT.
 
@@ -291,6 +291,7 @@ var
     begin
       var NewSetupForm := TSetupForm.CreateNew(nil);
       try
+        NewSetupForm.PopupMode := pmAuto;
         NewSetupForm.AutoScroll := False;
         NewSetupForm.BorderStyle := bsDialog;
         NewSetupForm.InitializeFont;
@@ -317,23 +318,23 @@ var
     RegisterScriptFunc('BROWSEFORFOLDER', procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
     begin
       var S := Stack.GetString(PStart-2);
-      Stack.SetBool(PStart, BrowseForFolder(Stack.GetString(PStart-1), S, GetWizardFormHandle, Stack.GetBool(PStart-3)));
+      Stack.SetBool(PStart, BrowseForFolder(Stack.GetString(PStart-1), S, GetOwnerWndForMessageBox, Stack.GetBool(PStart-3)));
       Stack.SetString(PStart-2, S);
     end);
     RegisterScriptFunc('GETOPENFILENAME', procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
     begin
       var S := Stack.GetString(PStart-2);
-      Stack.SetBool(PStart, NewGetOpenFileName(Stack.GetString(PStart-1), S, Stack.GetString(PStart-3), Stack.GetString(PStart-4), Stack.GetString(PStart-5), GetWizardFormHandle));
+      Stack.SetBool(PStart, NewGetOpenFileName(Stack.GetString(PStart-1), S, Stack.GetString(PStart-3), Stack.GetString(PStart-4), Stack.GetString(PStart-5), GetOwnerWndForMessageBox));
       Stack.SetString(PStart-2, S);
     end);
     RegisterScriptFunc('GETOPENFILENAMEMULTI', procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
     begin
-      Stack.SetBool(PStart, NewGetOpenFileNameMulti(Stack.GetString(PStart-1), TStrings(Stack.GetClass(PStart-2)), Stack.GetString(PStart-3), Stack.GetString(PStart-4), Stack.GetString(PStart-5), GetWizardFormHandle));
+      Stack.SetBool(PStart, NewGetOpenFileNameMulti(Stack.GetString(PStart-1), TStrings(Stack.GetClass(PStart-2)), Stack.GetString(PStart-3), Stack.GetString(PStart-4), Stack.GetString(PStart-5), GetOwnerWndForMessageBox));
     end);
     RegisterScriptFunc('GETSAVEFILENAME', procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
     begin
       var S := Stack.GetString(PStart-2);
-      Stack.SetBool(PStart, NewGetSaveFileName(Stack.GetString(PStart-1), S, Stack.GetString(PStart-3), Stack.GetString(PStart-4), Stack.GetString(PStart-5), GetWizardFormHandle));
+      Stack.SetBool(PStart, NewGetSaveFileName(Stack.GetString(PStart-1), S, Stack.GetString(PStart-3), Stack.GetString(PStart-4), Stack.GetString(PStart-5), GetOwnerWndForMessageBox));
       Stack.SetString(PStart-2, S);
     end);
   end;
@@ -1175,10 +1176,6 @@ var
     begin
       Stack.SetBool(PStart, CodeRegisterExtraCloseApplicationsResource(Stack.GetBool(PStart-1), Stack.GetString(PStart-2)));
     end);
-    RegisterScriptFunc('GETMAINFORM', procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
-    begin
-      Stack.SetClass(PStart, GetMainForm);
-    end);
     RegisterScriptFunc('GETWIZARDFORM', procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
     begin
       Stack.SetClass(PStart, GetWizardForm);
@@ -1591,8 +1588,9 @@ var
   begin
     RegisterScriptFunc('BRINGTOFRONTANDRESTORE', procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
     begin
-      Application.BringToFront;
+      { Must be in this order to work around VCL bug }
       Application.Restore;
+      Application.BringToFront;
     end);
     RegisterScriptFunc('WizardDirValue', sfNoUninstall, procedure(const Caller: TPSExec; const OrgName: AnsiString; const Stack: TPSStack; const PStart: Cardinal)
     begin

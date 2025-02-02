@@ -2,7 +2,7 @@ unit Shared.CommonFunc.Vcl;
 
 {
   Inno Setup
-  Copyright (C) 1997-2024 Jordan Russell
+  Copyright (C) 1997-2025 Jordan Russell
   Portions by Martijn Laan
   For conditions of distribution and use, see LICENSE.TXT.
 
@@ -37,6 +37,7 @@ type
 const
   EnableColor: array[Boolean] of TColor = (clBtnFace, clWindow);
 
+function AppCreateForm(const AClass: TCustomFormClass): TCustomForm;
 procedure UpdateHorizontalExtent(const ListBox: TCustomListBox);
 function MinimizePathName(const Filename: String; const Font: TFont;
   MaxLen: Integer): String;
@@ -54,6 +55,8 @@ procedure SetMessageBoxRightToLeft(const ARightToLeft: Boolean);
 function GetMessageBoxRightToLeft: Boolean;
 procedure SetMessageBoxCallbackFunc(const AFunc: TMsgBoxCallbackFunc; const AParam: LongInt);
 procedure TriggerMessageBoxCallbackFunc(const Flags: LongInt; const After: Boolean);
+function GetOwnerWndForMessageBox: HWND;
+function IsWindowOnTaskbar(const Wnd: HWND): Boolean;
 
 implementation
 
@@ -66,6 +69,22 @@ var
   MessageBoxCallbackFunc: TMsgBoxCallbackFunc;
   MessageBoxCallbackParam: LongInt;
   MessageBoxCallbackActive: Boolean;
+
+function AppCreateForm(const AClass: TCustomFormClass): TCustomForm;
+{ Creates a form, making it the main form if there isn't one already.
+  Usage: AppCreateForm(TMyForm) as TMyForm
+  This is a wrapper around Application.CreateForm, but with these advantages:
+  - Safety: Returns a typed value instead of writing to an untyped parameter.
+  - Safety: When used in an assignment statement: MyForm := AppCreateForm(...)
+    the variable isn't modified until the form is fully constructed and the
+    function exits. Application.CreateForm writes to its parameter, making the
+    value public, before the form's constructor is executed, which could allow
+    code outside the form to access the form before it's fully constructed.
+  - When the result is casted with "as", it works with type inference.
+  - When used in the .dpr, the Delphi IDE will never touch it. }
+begin
+  Application.CreateForm(AClass, Result);
+end;
 
 type
   TListBoxAccess = class(TCustomListBox);
@@ -207,23 +226,76 @@ begin
   end;
 end;
 
+function GetOwnerWndForMessageBox: HWND;
+{ Returns window handle that Application.MessageBox, if called immediately
+  after this function, would use as the owner window for the message box.
+  Exception: If the window that would be returned is not shown on the taskbar,
+  or is a minimized Application.Handle window, then 0 is returned instead.
+  See comments in AppMessageBox. }
+begin
+  { This is what Application.MessageBox does (Delphi 11.3) }
+  Result := Application.ActiveFormHandle;
+  if Result = 0 then  { shouldn't be possible, but they have this check }
+    Result := Application.Handle;
+
+  { Now our overrides }
+  if (Result = Application.Handle) and IsIconic(Result) then
+    Exit(0);
+
+  if not IsWindowOnTaskbar(Result) then
+    Result := 0;
+end;
+
+function IsWindowOnTaskbar(const Wnd: HWND): Boolean;
+begin
+  { Find the "root owner" window, which is what appears in the taskbar.
+    We avoid GetAncestor(..., GA_ROOTOWNER) because it's broken in the same
+    way as GetParent(): it stops if it reaches a top-level window that doesn't
+    have the WS_POPUP style (i.e., a WS_OVERLAPPED window). }
+  var RootWnd := Wnd;
+  while True do begin
+    { Visible WS_EX_APPWINDOW windows have their own taskbar button regardless
+      of their root owner's visibility }
+    if (GetWindowLong(RootWnd, GWL_EXSTYLE) and WS_EX_APPWINDOW <> 0) and
+       (GetWindowLong(RootWnd, GWL_STYLE) and WS_VISIBLE <> 0) then
+      Exit(True);
+    var ParentWnd := HWND(GetWindowLongPtr(RootWnd, GWLP_HWNDPARENT));
+    if ParentWnd = 0 then
+      Break;
+    RootWnd := ParentWnd;
+  end;
+
+  Result := (GetWindowLong(RootWnd, GWL_STYLE) and WS_VISIBLE <> 0) and
+    (GetWindowLong(RootWnd, GWL_EXSTYLE) and WS_EX_TOOLWINDOW = 0);
+end;
+
 function AppMessageBox(const Text, Caption: PChar; Flags: Longint): Integer;
 var
   ActiveWindow: HWND;
   WindowList: Pointer;
 begin
+  { Always restore the app first if it's minimized. This makes sense from a
+    usability perspective (e.g., it may be unclear which app generated the
+    message box if it's shown by itself), but it's also a VCL bug mitigation
+    (seen on Delphi 11.3):
+    Without this, when Application.MainFormOnTaskBar=True, showing a window
+    like a message box causes a WM_ACTIVATEAPP message to be sent to
+    Application.Handle, and the VCL strangely responds by setting FAppIconic
+    to False -- even though the main form is still iconic (minimized). If we
+    later try to call Application.Restore, nothing happens because it sees
+    FAppIconic=False. }
+  Application.Restore;
+
   { Always try to bring the message box to the foreground. Task dialogs appear
     to do that by default.
-    Without this, if the main form is minimized and then closed via the
-    taskbar 'X', a message box shown in its OnCloseQuery handler gets
-    displayed behind the foreground app's window, with no indication that a
-    message box is waiting. With the flag set, the message box is still shown
-    behind the foreground app's window, but the taskbar button begins blinking
-    and the main form is restored automatically. (These tests were done with
-    MainFormOnTaskBar=True and the message box window properly owned by the
-    main form. Don't run under the debugger when testing because that changes
-    the foreground stealing rules.) }
+    Due to Windows' protections against apps stealing the foreground, the
+    message box won't actually come to the foreground in most cases. Instead,
+    the taskbar button will flash. That's really all we need; the user just
+    needs to be made aware that a message box is awaiting their response.
+    (Note: Don't run under the debugger when testing because Windows allows
+    debugged processes to steal the foreground with no restrictions.) }
   Flags := Flags or MB_SETFOREGROUND;
+
   if MessageBoxRightToLeft then
     Flags := Flags or (MB_RTLREADING or MB_RIGHT);
 
@@ -265,20 +337,30 @@ begin
       it's easier to get the message box back on top.
       (This problem doesn't occur when Application.MainFormOnTaskBar=True
       because the main form retains its WS_VISIBLE style while minimized.)
+
+      UPDATE: Had to restrict the use of MB_TASKMODAL to only when
+      MainFormOnTaskBar=False is set to work around *another* VCL issue.
+      The above problem doesn't affect MainFormOnTaskBar=True so that should
+      be fine.
+      Details: When MainFormOnTaskBar=True and MessageBox is called with the
+      MB_TASKMODAL flag after the main form is created but before the main
+      form is shown, the message box appears on the screen but you can't
+      interact with it using the keyboard; keys like Enter and Escape have no
+      effect. The problem? The CM_ACTIVATE handler in TApplication.WndProc is
+      calling SetFocus with a NULL window handle. This erroneous SetFocus call
+      is only reached when the main form window is found to be disabled, which
+      only happens when MB_TASKMODAL is used. As noted above, non-visible
+      windows aren't disabled when only DisableTaskWindows is used.
     }
-    var ActWnd := Application.ActiveFormHandle;
-    if ActWnd = 0 then  { shouldn't be possible, but they have this check }
-      ActWnd := Application.Handle;
-    if (ActWnd = Application.Handle) and
-       (IsIconic(Application.Handle) or
-        (GetWindowLong(Application.Handle, GWL_STYLE) and WS_VISIBLE = 0) or
-        (GetWindowLong(Application.Handle, GWL_EXSTYLE) and WS_EX_TOOLWINDOW <> 0)) then begin
+    if GetOwnerWndForMessageBox = 0 then begin
       ActiveWindow := GetActiveWindow;
       WindowList := DisableTaskWindows(0);
       try
         { Note: DisableTaskWindows doesn't disable invisible windows.
           MB_TASKMODAL will ensure that Application.Handle gets disabled too. }
-        Result := MessageBox(0, Text, Caption, Flags or MB_TASKMODAL);
+        if not Application.MainFormOnTaskBar then
+          Flags := Flags or MB_TASKMODAL;
+        Result := MessageBox(0, Text, Caption, UINT(Flags));
       finally
         EnableTaskWindows(WindowList);
         SetActiveWindow(ActiveWindow);
